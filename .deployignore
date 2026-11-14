@@ -1,0 +1,21 @@
+# Исключения для выкладки на удалённый хостинг (см. scripts/pack-remote.sh, DEPLOY.md).
+# На сервере игра работает по HTTPS: настройки из .env, Phaser/GSAP — с CDN.
+
+.git/
+.gitignore
+.deployignore
+DEPLOY.md
+
+# Локальная сборка под флешку
+dist-usb/
+dist-remote/
+
+# Инструменты разработки (на сервере не нужны)
+scripts/
+
+# Офлайн-замена .env и локальные библиотеки — только для USB / file://
+env.local.js
+vendor/
+
+.DS_Store
+**/.DS_Store

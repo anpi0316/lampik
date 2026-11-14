@@ -32,14 +32,42 @@ function readStartFromRaw(raw) {
   return { x, y };
 }
 
+function readEmbeddedEnvText() {
+  const embedded = window.LAMPIK_ENV_DOTENV;
+  if (typeof embedded === 'string' && embedded.trim()) {
+    return embedded;
+  }
+  return null;
+}
+
 /** @returns {Promise<object>} */
 async function loadGameEnv(envUrl = '.env') {
-  const response = await fetch(envUrl, { cache: 'no-cache' });
-  if (!response.ok) {
-    throw new Error(`Не удалось загрузить ${envUrl} (${response.status})`);
+  let dotenvText = null;
+
+  if (typeof location !== 'undefined' && location.protocol !== 'file:') {
+    try {
+      const response = await fetch(envUrl, { cache: 'no-cache' });
+      if (response.ok) {
+        dotenvText = await response.text();
+      }
+    } catch {
+      /* сеть / сервер недоступен */
+    }
   }
 
-  const raw = parseDotEnv(await response.text());
+  if (!dotenvText) {
+    dotenvText = readEmbeddedEnvText();
+  }
+
+  if (!dotenvText) {
+    const hint =
+      typeof location !== 'undefined' && location.protocol === 'file:'
+        ? 'Скопируйте на флешку env.local.js (сгенерируйте: node scripts/generate-env-local.js) или запустите через локальный HTTP-сервер.'
+        : 'Положите .env в корень или сгенерируйте env.local.js.';
+    throw new Error(`Не удалось загрузить настройки игры. ${hint}`);
+  }
+
+  const raw = parseDotEnv(dotenvText);
 
   const mapWidth = Number(raw.MAP_WIDTH);
   const mapHeight = Number(raw.MAP_HEIGHT);

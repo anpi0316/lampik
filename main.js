@@ -772,6 +772,10 @@ async function isVideoAssetAvailable(url) {
   if (videoSplashHeadCache.has(url)) {
     return videoSplashHeadCache.get(url) === true;
   }
+  if (typeof location !== 'undefined' && location.protocol === 'file:') {
+    videoSplashHeadCache.set(url, /\.mp4$/i.test(url) === false);
+    return videoSplashHeadCache.get(url) === true;
+  }
   try {
     const res = await fetch(url, { method: 'HEAD' });
     const ok = res.ok;
@@ -6819,6 +6823,6 @@ loadGameEnv()
     console.error(error);
     document.body.insertAdjacentHTML(
       'beforeend',
-      '<p style="color:#fff;text-align:center;padding:1rem">Не удалось загрузить .env. Запустите игру через локальный HTTP-сервер.</p>'
+      `<p style="color:#fff;text-align:center;padding:1rem;max-width:36rem;margin:0 auto;line-height:1.45">${String(error?.message || error)}</p>`
     );
   });

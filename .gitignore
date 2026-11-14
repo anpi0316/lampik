@@ -1,0 +1,17 @@
+# --- Сборки (не в git) ---
+dist-usb/
+dist-remote/
+
+# --- Только флешка / file:// (генерируются: scripts/prepare-usb.sh) ---
+vendor/
+env.local.js
+
+# --- macOS ---
+.DS_Store
+**/.DS_Store
+
+# --- IDE (по желанию) ---
+.idea/
+*.iml
+.vscode/
+!.vscode/extensions.json

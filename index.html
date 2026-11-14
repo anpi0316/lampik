@@ -205,10 +205,33 @@
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/phaser@3.88.1/dist/phaser.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/Draggable.min.js"></script>
-    <script src="env.js?v=9"></script>
+    <!-- vendor/* и env.local.js — только флешка/офлайн; на сервер не заливать (см. DEPLOY.md) -->
+    <script src="vendor/phaser.min.js"></script>
+    <script>
+      if (typeof Phaser === 'undefined') {
+        document.write(
+          '<script src="https://cdn.jsdelivr.net/npm/phaser@3.88.1/dist/phaser.min.js"><\/script>'
+        );
+      }
+    </script>
+    <script src="vendor/gsap.min.js"></script>
+    <script>
+      if (typeof gsap === 'undefined') {
+        document.write(
+          '<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"><\/script>'
+        );
+      }
+    </script>
+    <script src="vendor/Draggable.min.js"></script>
+    <script>
+      if (typeof Draggable === 'undefined') {
+        document.write(
+          '<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/Draggable.min.js"><\/script>'
+        );
+      }
+    </script>
+    <script src="env.local.js?v=1"></script>
+    <script src="env.js?v=10"></script>
     <script src="main.js?v=68"></script>
   </body>
 </html>
