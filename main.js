@@ -517,6 +517,57 @@ function encodeAssetPath(path) {
     .join('/');
 }
 
+function isFileProtocol() {
+  return typeof location !== 'undefined' && location.protocol === 'file:';
+}
+
+/**
+ * file:// — Phaser Loader через XHR не грузит локальные PNG; заранее через Image().
+ * @param {string} url
+ * @returns {Promise<HTMLImageElement>}
+ */
+function loadImageElement(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Не удалось загрузить: ${url}`));
+    img.src = encodeAssetPath(url);
+  });
+}
+
+/**
+ * @param {object} env
+ * @returns {Promise<void>}
+ */
+async function preloadFileProtocolTextures(env) {
+  const mapPath = env.mapImagePath || 'assets/map4.png';
+  const lampikPath =
+    env.lampikImagePath || 'assets/_lampik-remove-background.com (1).png';
+  const [mapImg, lampikImg] = await Promise.all([
+    loadImageElement(mapPath),
+    loadImageElement(lampikPath),
+  ]);
+  window.__LAMPIK_FILE_TEXTURES__ = {
+    map: mapImg,
+    [LAMPIK_TEXTURE_KEY]: lampikImg,
+  };
+}
+
+function injectFileProtocolTextures(scene) {
+  const pre = window.__LAMPIK_FILE_TEXTURES__;
+  if (!pre) {
+    return false;
+  }
+  if (pre.map && !scene.textures.exists('map')) {
+    scene.textures.addImage('map', pre.map);
+  }
+  if (pre[LAMPIK_TEXTURE_KEY] && !scene.textures.exists(LAMPIK_TEXTURE_KEY)) {
+    scene.textures.addImage(LAMPIK_TEXTURE_KEY, pre[LAMPIK_TEXTURE_KEY]);
+  }
+  return scene.textures.exists('map');
+}
+
 /** Обрезка пустых/чёрных полей (lampik2.png — персонаж в центре большого холста). */
 function detectLampikContentBounds(scene, textureKey, assetRev = '') {
   const regKey = `${textureKey}_${assetRev}_trimBounds_v2`;
@@ -5979,21 +6030,25 @@ class MainScene extends Phaser.Scene {
   }
 
   preload() {
+    if (isFileProtocol() && injectFileProtocolTextures(this)) {
+      return;
+    }
+
     const mapPath = window.GAME_ENV?.mapImagePath || 'assets/map4.png';
-    this.load.image('map', mapPath);
+    this.load.image('map', encodeAssetPath(mapPath));
     const lampikPath =
       window.GAME_ENV?.lampikImagePath || 'assets/_lampik-remove-background.com (1).png';
     const lampikUrl = encodeAssetPath(lampikPath);
     this.load.image(LAMPIK_TEXTURE_KEY, lampikUrl);
     this.load.on(`loaderror`, (file) => {
-      if (file.key === LAMPIK_TEXTURE_KEY) {
-        console.error('[lampik] Ошибка загрузки:', file.url);
+      if (file.key === 'map' || file.key === LAMPIK_TEXTURE_KEY) {
+        console.error('[lampik] Ошибка загрузки:', file.key, file.url);
       }
     });
 
     const env = window.GAME_ENV;
     if (env?.useWalkSpritesheet && env.walkSheetPath) {
-      this.load.spritesheet(WALK_SPRITE.key, env.walkSheetPath, {
+      this.load.spritesheet(WALK_SPRITE.key, encodeAssetPath(env.walkSheetPath), {
         frameWidth: env.walkFrameWidth,
         frameHeight: env.walkFrameHeight,
       });
@@ -6040,11 +6095,17 @@ class MainScene extends Phaser.Scene {
   }
 
   create() {
-    setTextureSmoothFilter(this, 'map');
-    if (!this.textures.exists(LAMPIK_TEXTURE_KEY)) {
-      console.error('[lampik] PNG не загрузился — проверьте LAMPIK_IMAGE_PATH и HTTP-сервер');
+    if (!this.textures.exists('map')) {
+      console.error(
+        '[lampik] Карта не загружена. При file:// нужны папка assets/ и env.local.js; лучше dist-usb/'
+      );
     } else {
-      setTextureSmoothFilter(this, 'lampik');
+      setTextureSmoothFilter(this, 'map');
+    }
+    if (!this.textures.exists(LAMPIK_TEXTURE_KEY)) {
+      console.error('[lampik] PNG не загрузился — проверьте LAMPIK_IMAGE_PATH и пути к assets/');
+    } else {
+      setTextureSmoothFilter(this, LAMPIK_TEXTURE_KEY);
     }
     this.cameras.main.setRoundPixels(true);
 
@@ -6763,7 +6824,7 @@ let game;
 
 function initPhaserGame() {
   const config = {
-    type: Phaser.AUTO,
+    type: isFileProtocol() ? Phaser.CANVAS : Phaser.AUTO,
     parent: 'game-container',
     banner: false,
     width: window.innerWidth,
@@ -6807,7 +6868,7 @@ bindGameAudioUnlock();
 bindPortraitOrientationGate();
 
 loadGameEnv()
-  .then((env) => {
+  .then(async (env) => {
     window.GAME_ENV = env;
     syncSparksHud();
     const modalLampik = document.getElementById('task-modal-lampik');
@@ -6815,6 +6876,20 @@ loadGameEnv()
       modalLampik.src = encodeAssetPath(env.lampikImagePath);
     }
     syncTaskModalDismissUi();
+    if (isFileProtocol()) {
+      try {
+        await preloadFileProtocolTextures(env);
+      } catch (preloadError) {
+        console.error(preloadError);
+        document.body.insertAdjacentHTML(
+          'beforeend',
+          `<p style="color:#fff;text-align:center;padding:1rem;max-width:36rem;margin:0 auto;line-height:1.45">${
+            preloadError?.message || preloadError
+          }. Проверьте, что рядом с index.html есть папка assets/ (или соберите ./scripts/prepare-usb.sh).</p>`
+        );
+        return;
+      }
+    }
     showStartVideoSplash(() => {
       initPhaserGame();
     });

@@ -50,3 +50,11 @@ video/
 
 После изменения `.env` на флешке: заново `./scripts/prepare-usb.sh`.  
 Для сайта: обнови `.env` на сервере (или пересобери `dist-remote` и залей).
+
+## Двойной клик по `index.html` (file://)
+
+Phaser не грузит карту через свой Loader — в `main.js` PNG подгружаются через `Image()` до старта сцены. Нужны:
+
+- **`env.local.js`** (в корне рядом с `index.html`), иначе настройки не прочитаются: `node scripts/generate-env-local.js`
+- папки **`assets/`**, **`video/`**, **`vendor/`** (проще собрать `./scripts/prepare-usb.sh` → `dist-usb/`)
+- открывать **корневой** `index.html` проекта, не копировать один файл
