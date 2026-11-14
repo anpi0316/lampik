@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Лампик — приключение</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css?v=56" />
+  </head>
+  <body class="video-splash-active">
+    <div
+      id="lampik-video-splash"
+      class="video-splash video-splash--start"
+      aria-hidden="false"
+      role="dialog"
+      aria-label="Заставка"
+    >
+      <div class="video-splash__backdrop" aria-hidden="true"></div>
+      <video
+        id="lampik-video-splash-player"
+        class="video-splash__video"
+        playsinline
+        preload="auto"
+        aria-label="Видео-заставка"
+      ></video>
+      <p id="lampik-video-splash-tagline" class="video-splash__tagline">
+        Лампик отправляется в путь к бабушке и дедушке
+      </p>
+      <p id="lampik-video-splash-loading" class="video-splash__loading">Загрузка…</p>
+      <button
+        type="button"
+        id="lampik-video-splash-action"
+        class="video-splash__action video-splash__action--go"
+        hidden
+      >
+        В путь!
+      </button>
+      <button type="button" id="lampik-video-splash-skip" class="video-splash__skip" hidden>
+        Пропустить
+      </button>
+      <div id="lampik-video-splash-finale" class="video-splash__finale" hidden aria-hidden="true">
+        <h2 class="video-splash__finale-title">Ура! Ты дошёл к бабушке и дедушке!</h2>
+        <p class="video-splash__finale-sparks">
+          Твои искры:
+          <span id="lampik-video-splash-sparks" class="video-splash__finale-count">0</span>
+        </p>
+        <button type="button" id="lampik-video-splash-rewards" class="video-splash__action video-splash__action--rewards">
+          Забрать награды
+        </button>
+      </div>
+    </div>
+
+    <button
+      type="button"
+      id="sparks-hud"
+      class="sparks-hud"
+      aria-label="Собранные искры. Нажми, чтобы открыть обмен."
+      title="Искры за задания на пути к бабушке и дедушке"
+    >
+      <span class="sparks-hud__icon" aria-hidden="true">
+        <img
+          class="sparks-hud__badge"
+          src="assets/iskra2.png"
+          alt=""
+          width="52"
+          height="52"
+          decoding="async"
+        />
+      </span>
+      <span id="sparks-count" class="sparks-hud__count">0</span>
+    </button>
+
+    <div id="spark-exchange" class="spark-exchange" aria-hidden="true" hidden>
+      <div class="spark-exchange__backdrop" data-spark-exchange-dismiss></div>
+      <div
+        class="spark-exchange__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="spark-exchange-title"
+      >
+        <p class="spark-exchange__sparks-counter" id="spark-exchange-sparks-counter">
+          Твои искры: <strong id="spark-exchange-balance">0</strong>
+        </p>
+        <h2 id="spark-exchange-title" class="spark-exchange__title">Твои награды!</h2>
+        <p class="spark-exchange__lead" id="spark-exchange-lead" hidden>
+          За каждое задание Лампик дарит искру. Выбери подарок!
+        </p>
+        <div id="spark-exchange-rewards" class="spark-exchange__rewards-row" role="list"></div>
+        <button type="button" id="spark-exchange-replay" class="spark-exchange__replay" hidden>
+          Играть снова
+        </button>
+        <button type="button" class="spark-exchange__later" data-spark-exchange-dismiss>
+          Потом
+        </button>
+      </div>
+    </div>
+
+    <div id="reward-gift-modal" class="reward-gift-modal" aria-hidden="true" hidden>
+      <div class="reward-gift-modal__backdrop" data-reward-gift-dismiss></div>
+      <div
+        class="reward-gift-modal__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reward-gift-title"
+      >
+        <h3 id="reward-gift-title" class="reward-gift-modal__title">Твой подарок</h3>
+        <p id="reward-gift-hint" class="reward-gift-modal__hint" hidden>
+          Искры уже списаны. Можно скачать подарок или закрыть окно.
+        </p>
+        <div class="reward-gift-modal__preview">
+          <img id="reward-gift-image" class="reward-gift-modal__img" src="" alt="" decoding="async" />
+        </div>
+        <div class="reward-gift-modal__actions">
+          <button type="button" id="reward-gift-buy" class="reward-gift-modal__buy" hidden>
+            Купить
+          </button>
+          <button type="button" id="reward-gift-download" class="reward-gift-modal__download">
+            Скачать
+          </button>
+          <button type="button" class="reward-gift-modal__close" data-reward-gift-dismiss>
+            Закрыть
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="game-container"></div>
+
+    <div id="task-modal" class="task-modal" aria-hidden="true" hidden>
+      <div class="task-modal__backdrop" data-task-dismiss="false"></div>
+      <div class="task-modal__panel" role="dialog" aria-modal="true" aria-labelledby="task-modal-heading">
+        <button
+          type="button"
+          id="task-modal-dismiss"
+          class="task-modal__dismiss"
+          data-task-dismiss-control
+          title="Скрыть окно (временно, без искры)"
+          aria-label="Скрыть окно задания"
+        >
+          ×
+        </button>
+        <h2 class="task-modal__title" id="task-modal-heading">
+          <span id="task-modal-title" class="task-modal__title-text">Задание</span>
+        </h2>
+        <div id="task-modal-body" class="task-modal__body">
+          <div class="task-modal__mascot-stage" aria-hidden="true">
+            <img
+              id="task-modal-lampik"
+              class="task-modal__lampik"
+              src="assets/_lampik-remove-background.com%20(1).png"
+              width="120"
+              height="160"
+              alt=""
+              decoding="async"
+            />
+          </div>
+          <div id="task-modal-content" class="task-modal__content"></div>
+        </div>
+        <button
+          type="button"
+          id="task-modal-next"
+          class="task-modal__next"
+          disabled
+          aria-label="Пока нельзя — сначала сделай задание"
+        >
+          <span class="task-modal__next-glyphs" aria-hidden="true">
+            <span class="task-modal__next-wait">
+              <span class="task-modal__next-dot"></span>
+              <span class="task-modal__next-dot"></span>
+              <span class="task-modal__next-dot"></span>
+            </span>
+            <span class="task-modal__next-go">
+              <span class="task-modal__next-check">✓</span>
+              <span class="task-modal__next-arrow" aria-hidden="true"></span>
+            </span>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.88.1/dist/phaser.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/Draggable.min.js"></script>
+    <script src="env.js?v=9"></script>
+    <script src="main.js?v=63"></script>
+  </body>
+</html>
