@@ -1,0 +1,10 @@
+{
+  "name": "Лампик — приключение",
+  "short_name": "Лампик",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "lang": "ru"
+}

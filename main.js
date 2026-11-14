@@ -71,6 +71,93 @@ function prefersCoarsePointer() {
   return window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches;
 }
 
+const ORIENTATION_LOCK_EL_ID = 'lampik-orientation-lock';
+let orientationGateBound = false;
+let landscapeLockAttempted = false;
+
+/** Смартфон (не планшет с мышью): короткая сторона экрана типична для телефона. */
+function isPhoneLikeDevice() {
+  if (!prefersCoarsePointer()) {
+    return false;
+  }
+  const short = Math.min(window.innerWidth, window.innerHeight);
+  const long = Math.max(window.innerWidth, window.innerHeight);
+  return short <= 520 && long >= short * 1.12;
+}
+
+function isPortraitOrientation() {
+  if (window.matchMedia) {
+    if (window.matchMedia('(orientation: portrait)').matches) {
+      return true;
+    }
+    if (window.matchMedia('(orientation: landscape)').matches) {
+      return false;
+    }
+  }
+  return window.innerHeight > window.innerWidth;
+}
+
+function shouldBlockPortraitPlay() {
+  return isPhoneLikeDevice() && isPortraitOrientation();
+}
+
+async function tryLockScreenLandscape() {
+  if (landscapeLockAttempted || !isPhoneLikeDevice()) {
+    return;
+  }
+  landscapeLockAttempted = true;
+  const orientation = screen.orientation;
+  if (!orientation || typeof orientation.lock !== 'function') {
+    return;
+  }
+  try {
+    await orientation.lock('landscape');
+  } catch {
+    /* Safari / обычная вкладка — остаётся подсказка «поверни телефон» */
+  }
+}
+
+function syncPortraitOrientationGate() {
+  const block = shouldBlockPortraitPlay();
+  document.body.classList.toggle('lampik-portrait-block', block);
+  const overlay = document.getElementById(ORIENTATION_LOCK_EL_ID);
+  if (overlay) {
+    overlay.hidden = !block;
+    overlay.setAttribute('aria-hidden', block ? 'false' : 'true');
+  }
+  if (game) {
+    const scene = game.scene.getScene('MainScene');
+    if (scene?.scene) {
+      if (block && scene.scene.isActive() && !scene.scene.isPaused()) {
+        scene.scene.pause();
+      } else if (!block && scene.scene.isPaused()) {
+        scene.scene.resume();
+        if (game.scale) {
+          game.scale.resize(window.innerWidth, window.innerHeight);
+        }
+      }
+    }
+  }
+}
+
+function bindPortraitOrientationGate() {
+  if (orientationGateBound) {
+    return;
+  }
+  orientationGateBound = true;
+  syncPortraitOrientationGate();
+  window.addEventListener('resize', syncPortraitOrientationGate);
+  window.addEventListener('orientationchange', syncPortraitOrientationGate);
+  screen.orientation?.addEventListener?.('change', syncPortraitOrientationGate);
+  document.addEventListener(
+    'pointerdown',
+    () => {
+      void tryLockScreenLandscape();
+    },
+    { capture: true, passive: true }
+  );
+}
+
 function markerTouchHitRadius(visualRadius) {
   const scaled = Math.max(28, visualRadius * NEXT_MARKER.hitRadiusMult);
   return prefersCoarsePointer() ? Math.max(TOUCH_MARKER_HIT_MIN_PX, scaled) : scaled;
@@ -643,6 +730,10 @@ let videoSplashStartComplete = null;
 let videoSplashLoadTimeout = null;
 /** @type {Map<string, boolean>} */
 const videoSplashHeadCache = new Map();
+/** @type {string[]} */
+let videoSplashUrlQueue = [];
+/** @type {number} */
+let videoSplashUrlQueueIndex = 0;
 
 function readVideoSplashEls() {
   return {
@@ -693,24 +784,34 @@ async function isVideoAssetAvailable(url) {
 }
 
 /**
- * Один URL — без лишнего source на отсутствующий .mp4 (иначе 404 и чёрный экран).
+ * URL-ы заставки в порядке приоритета для браузера (Chrome — mp4, Safari — mov).
  * @param {'start' | 'finish'} kind
- * @returns {Promise<string | null>}
+ * @returns {Promise<string[]>}
  */
-async function resolveSplashVideoUrl(kind) {
+async function resolveSplashVideoUrlCandidates(kind) {
   const paths = VIDEO_SPLASH_SOURCES[kind];
   if (!paths) {
-    return null;
+    return [];
   }
-  // Без лишнего HEAD к .mp4 (иначе 404 в консоли, если файла нет).
+  const mp4Ok = await isVideoAssetAvailable(paths.mp4);
   const preferMp4 = window.GAME_ENV?.videoSplashUseMp4 === true;
-  if (preferMp4) {
-    const mp4Ok = await isVideoAssetAvailable(paths.mp4);
-    if (mp4Ok) {
-      return paths.mp4;
+
+  const ordered = [];
+  const pushUnique = (url) => {
+    if (url && !ordered.includes(url)) {
+      ordered.push(url);
     }
+  };
+
+  // .mov есть в проекте; .mp4 — только если реально лежит на сервере (иначе лишний error).
+  pushUnique(paths.mov);
+  if (mp4Ok && preferMp4) {
+    ordered.unshift(paths.mp4);
+  } else if (mp4Ok) {
+    pushUnique(paths.mp4);
   }
-  return paths.mov;
+
+  return ordered;
 }
 
 function clearVideoSplashLoadTimeout() {
@@ -723,7 +824,7 @@ function clearVideoSplashLoadTimeout() {
 /** Если декодирование зависло — всё равно даём «В путь!» / «Пропустить». */
 function showVideoSplashStalledUi() {
   const { loading, skip, action, video } = readVideoSplashEls();
-  if (videoSplashPlaying || videoSplashLoadFailed) {
+  if (videoSplashPlaying) {
     return;
   }
   if (video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -777,31 +878,56 @@ function showVideoSplashFallbackUi() {
 /**
  * @param {'start' | 'finish'} kind
  */
-async function mountVideoSplashSources(kind) {
+function resetVideoSplashPlayerVisuals() {
   const { video } = readVideoSplashEls();
   if (!video) {
-    return false;
+    return;
   }
-  clearVideoSplashLoadTimeout();
-  videoSplashLoadFailed = false;
   video.pause();
   while (video.firstChild) {
     video.removeChild(video.firstChild);
   }
   video.removeAttribute('src');
   video.classList.remove('video-splash__video--ready');
+  video.classList.remove('video-splash__video--playing');
   video.currentTime = 0;
+}
 
-  const url = await resolveSplashVideoUrl(kind);
+async function mountVideoSplashSources(kind, startIndex = 0) {
+  const { video } = readVideoSplashEls();
+  if (!video) {
+    return false;
+  }
+  clearVideoSplashLoadTimeout();
+  videoSplashLoadFailed = false;
+
+  if (startIndex === 0) {
+    videoSplashUrlQueue = await resolveSplashVideoUrlCandidates(kind);
+    videoSplashUrlQueueIndex = 0;
+  }
+
+  resetVideoSplashPlayerVisuals();
+
+  const url = videoSplashUrlQueue[startIndex];
   if (!url) {
     showVideoSplashFallbackUi();
     return false;
   }
 
+  videoSplashUrlQueueIndex = startIndex;
   video.src = url;
   video.load();
   armVideoSplashLoadTimeout();
   return true;
+}
+
+function tryNextSplashVideoSource() {
+  const next = videoSplashUrlQueueIndex + 1;
+  if (next < videoSplashUrlQueue.length) {
+    videoSplashLoadFailed = false;
+    return mountVideoSplashSources(videoSplashMode || 'start', next);
+  }
+  return Promise.resolve(false);
 }
 
 function onVideoSplashReady() {
@@ -810,18 +936,18 @@ function onVideoSplashReady() {
     return;
   }
   clearVideoSplashLoadTimeout();
+  videoSplashLoadFailed = false;
   video.classList.add('video-splash__video--ready');
   loading?.setAttribute('hidden', '');
   if (videoSplashMode) {
     syncVideoSplashTagline(videoSplashMode, { playing: false });
   }
-  if (videoSplashMode === 'finish' && !videoSplashLoadFailed) {
+  if (videoSplashMode === 'finish') {
     tryAutoPlayFinishVideoSplash();
     return;
   }
-  if (action && !videoSplashLoadFailed) {
-    action.removeAttribute('hidden');
-  }
+  action?.removeAttribute('hidden');
+  skip?.removeAttribute('hidden');
 }
 
 function fadeOutAndHideVideoSplash(onDone) {
@@ -1009,17 +1135,21 @@ function bindVideoSplashUi() {
   videoSplashBound = true;
 
   action.addEventListener('click', () => {
-    ensureMiniGameAudioContext();
     if (videoSplashLoadFailed) {
       skipVideoSplash();
       return;
     }
     playVideoSplashFromUserGesture();
+    window.setTimeout(() => {
+      ensureMiniGameAudioContext();
+    }, 0);
   });
 
   skip?.addEventListener('click', () => {
-    ensureMiniGameAudioContext();
     skipVideoSplash();
+    window.setTimeout(() => {
+      ensureMiniGameAudioContext();
+    }, 0);
   });
 
   rewards?.addEventListener('click', () => {
@@ -1033,13 +1163,25 @@ function bindVideoSplashUi() {
   video.addEventListener('loadeddata', onProgress);
   video.addEventListener('canplay', onProgress);
   video.addEventListener('ended', onVideoSplashEnded);
+  video.addEventListener('playing', () => {
+    video.classList.add('video-splash__video--playing');
+    syncLampikBgmForVideo();
+  });
   video.addEventListener('play', () => syncLampikBgmForVideo());
-  video.addEventListener('pause', () => syncLampikBgmForVideo());
+  video.addEventListener('pause', () => {
+    video.classList.remove('video-splash__video--playing');
+    syncLampikBgmForVideo();
+  });
   video.addEventListener('error', () => {
     clearVideoSplashLoadTimeout();
-    if (!videoSplashPlaying) {
-      showVideoSplashFallbackUi();
+    if (videoSplashPlaying) {
+      return;
     }
+    void tryNextSplashVideoSource().then((ok) => {
+      if (!ok) {
+        showVideoSplashFallbackUi();
+      }
+    });
   });
 }
 
@@ -1482,31 +1624,42 @@ function playTapDripSound() {
 }
 
 let lampikFootstepSide = 0;
+let gameSfxBus = null;
 
-function connectFootstepToOutput(ctx, gainNode) {
-  if (typeof ctx.createStereoPanner === 'function') {
-    const panner = ctx.createStereoPanner();
-    panner.pan.value = (lampikFootstepSide === 0 ? -0.28 : 0.28) + (Math.random() - 0.5) * 0.12;
-    gainNode.connect(panner);
-    panner.connect(ctx.destination);
-    return;
+function ensureGameSfxBus() {
+  const ctx = ensureMiniGameAudioContext();
+  if (!ctx) {
+    return null;
   }
-  gainNode.connect(ctx.destination);
+  if (!gameSfxBus) {
+    const g = ctx.createGain();
+    g.gain.value = 1;
+    g.connect(ctx.destination);
+    gameSfxBus = g;
+  }
+  return gameSfxBus;
 }
 
 /** Тихий шаг Лампика по дорожке (синтез, без файлов) */
 function playLampikFootstepSound() {
   try {
-    const ctx = ensureMiniGameAudioContext();
-    if (!ctx || ctx.state !== 'running') {
-      return;
-    }
     if (isSplashVideoPlaying()) {
       return;
     }
+    const ctx = ensureMiniGameAudioContext();
+    if (!ctx) {
+      return;
+    }
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
+    const bus = ensureGameSfxBus();
+    if (!bus || ctx.state !== 'running') {
+      return;
+    }
     lampikFootstepSide = 1 - lampikFootstepSide;
-    const t0 = ctx.currentTime;
-    const duration = 0.062;
+    const t0 = ctx.currentTime + 0.001;
+    const duration = 0.07;
     const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * duration));
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -1517,37 +1670,75 @@ function playLampikFootstepSound() {
     const noise = ctx.createBufferSource();
     noise.buffer = buffer;
     const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = 'lowpass';
-    const sideBias = lampikFootstepSide === 0 ? -40 : 40;
-    noiseFilter.frequency.setValueAtTime(300 + sideBias + Math.random() * 200, t0);
-    noiseFilter.Q.setValueAtTime(0.55, t0);
+    noiseFilter.type = 'bandpass';
+    const sideBias = lampikFootstepSide === 0 ? 80 : -80;
+    noiseFilter.frequency.setValueAtTime(520 + sideBias + Math.random() * 140, t0);
+    noiseFilter.Q.setValueAtTime(1.1, t0);
     const noiseGain = ctx.createGain();
-    const peak = 0.055 + Math.random() * 0.025;
+    const peak = 0.14 + Math.random() * 0.06;
     noiseGain.gain.setValueAtTime(peak, t0);
     noiseGain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
-    connectFootstepToOutput(ctx, noiseGain);
+    noiseGain.connect(bus);
     noise.start(t0);
     noise.stop(t0 + duration + 0.02);
 
     const thump = ctx.createOscillator();
     const thumpGain = ctx.createGain();
-    thump.type = 'sine';
-    thump.frequency.setValueAtTime(72 + sideBias * 0.15 + Math.random() * 24, t0);
-    thump.frequency.exponentialRampToValueAtTime(44, t0 + 0.045);
-    thumpGain.gain.setValueAtTime(0.038, t0);
-    thumpGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
+    thump.type = 'triangle';
+    thump.frequency.setValueAtTime(105 + Math.random() * 30, t0);
+    thump.frequency.exponentialRampToValueAtTime(58, t0 + 0.055);
+    thumpGain.gain.setValueAtTime(0.1, t0);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.065);
     thump.connect(thumpGain);
-    connectFootstepToOutput(ctx, thumpGain);
+    thumpGain.connect(bus);
     thump.start(t0);
-    thump.stop(t0 + 0.055);
+    thump.stop(t0 + 0.07);
+
+    const click = ctx.createOscillator();
+    const clickGain = ctx.createGain();
+    click.type = 'square';
+    click.frequency.setValueAtTime(720 + Math.random() * 200, t0);
+    clickGain.gain.setValueAtTime(0.018, t0);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.018);
+    const clickFilter = ctx.createBiquadFilter();
+    clickFilter.type = 'highpass';
+    clickFilter.frequency.setValueAtTime(400, t0);
+    click.connect(clickFilter);
+    clickFilter.connect(clickGain);
+    clickGain.connect(bus);
+    click.start(t0);
+    click.stop(t0 + 0.022);
   } catch {
     /* необязательно */
   }
 }
 
-const LAMPIK_BGM_MASTER_GAIN = 0.14;
+const walkFootstepRhythm = {
+  timer: null,
+  cycleMs: 0,
+};
+
+function startWalkFootstepRhythm(cycleDurationSec) {
+  stopWalkFootstepRhythm();
+  onGameAudioUnlocked();
+  const stepMs = Math.max(90, Math.round(cycleDurationSec * 500));
+  walkFootstepRhythm.cycleMs = stepMs;
+  playLampikFootstepSound();
+  walkFootstepRhythm.timer = window.setInterval(() => {
+    playLampikFootstepSound();
+  }, stepMs);
+}
+
+function stopWalkFootstepRhythm() {
+  if (walkFootstepRhythm.timer != null) {
+    window.clearInterval(walkFootstepRhythm.timer);
+    walkFootstepRhythm.timer = null;
+  }
+}
+
+const LAMPIK_BGM_MASTER_GAIN = 0.2;
 
 const LAMPIK_BGM_MOODS = [
   {
@@ -1645,14 +1836,14 @@ function scheduleLampikBgmPadNote(ctx, bus, startTime, midi, duration, peak) {
   const gain = ctx.createGain();
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.frequency.setValueAtTime(900, startTime);
-  filter.Q.setValueAtTime(0.4, startTime);
-  osc.type = Math.random() > 0.35 ? 'sine' : 'triangle';
+  filter.frequency.setValueAtTime(2200, startTime);
+  filter.Q.setValueAtTime(0.35, startTime);
+  osc.type = Math.random() > 0.25 ? 'triangle' : 'sawtooth';
   osc.frequency.setValueAtTime(successMidiToFreq(midi), startTime);
-  const attack = 0.65 + Math.random() * 0.35;
+  const attack = 0.08 + Math.random() * 0.12;
   gain.gain.setValueAtTime(0.0001, startTime);
   gain.gain.linearRampToValueAtTime(peak, startTime + attack);
-  gain.gain.setValueAtTime(peak * 0.82, startTime + Math.max(attack + 0.2, duration - 0.55));
+  gain.gain.setValueAtTime(peak * 0.88, startTime + Math.max(attack + 0.15, duration - 0.35));
   gain.gain.linearRampToValueAtTime(0.0001, startTime + duration);
   osc.connect(filter);
   filter.connect(gain);
@@ -1661,17 +1852,37 @@ function scheduleLampikBgmPadNote(ctx, bus, startTime, midi, duration, peak) {
   osc.stop(startTime + duration + 0.08);
 }
 
-function scheduleLampikBgmMelodyBlip(ctx, bus, startTime, midi) {
-  const duration = 0.2 + Math.random() * 0.22;
+function scheduleLampikBgmBeat(ctx, bus, startTime, strong = false) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(successMidiToFreq(midi), startTime);
-  osc.detune.setValueAtTime((Math.random() - 0.5) * 14, startTime);
+  osc.type = 'sine';
+  const base = strong ? 200 : 165;
+  osc.frequency.setValueAtTime(base, startTime);
+  osc.frequency.exponentialRampToValueAtTime(72, startTime + 0.1);
   gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.linearRampToValueAtTime(0.045 + Math.random() * 0.022, startTime + 0.025);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  gain.gain.linearRampToValueAtTime(strong ? 0.09 : 0.055, startTime + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.13);
   osc.connect(gain);
+  gain.connect(bus);
+  osc.start(startTime);
+  osc.stop(startTime + 0.15);
+}
+
+function scheduleLampikBgmMelodyBlip(ctx, bus, startTime, midi) {
+  const duration = 0.12 + Math.random() * 0.14;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = Math.random() > 0.4 ? 'square' : 'triangle';
+  osc.frequency.setValueAtTime(successMidiToFreq(midi), startTime);
+  osc.detune.setValueAtTime((Math.random() - 0.5) * 10, startTime);
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.linearRampToValueAtTime(0.065 + Math.random() * 0.03, startTime + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(3400, startTime);
+  osc.connect(filter);
+  filter.connect(gain);
   gain.connect(bus);
   osc.start(startTime);
   osc.stop(startTime + duration + 0.04);
@@ -1707,40 +1918,48 @@ function runLampikBgmPhrase() {
   }
 
   const mood = LAMPIK_BGM_MOODS[Math.floor(Math.random() * LAMPIK_BGM_MOODS.length)];
-  const t0 = ctx.currentTime + 0.06;
-  let cursor = t0;
-  const phraseChords = 2 + Math.floor(Math.random() * 2);
-  const order = [...mood.chords].sort(() => Math.random() - 0.5);
+  const t0 = ctx.currentTime + 0.04;
+  const beatSec = 0.42 + Math.random() * 0.08;
+  const bars = 4 + Math.floor(Math.random() * 3);
+  const beatsTotal = bars * 4;
+  const order = [...mood.chords].sort(() => Math.random() * 0.5 - 0.25);
 
-  for (let c = 0; c < phraseChords; c += 1) {
-    const chord = order[c % order.length];
-    const chordDur = 2.1 + Math.random() * 1.4;
-    chord.forEach((semi) => {
-      scheduleLampikBgmPadNote(
-        ctx,
-        bus,
-        cursor,
-        mood.root + semi,
-        chordDur,
-        0.055 + Math.random() * 0.028
-      );
-    });
-    const blips = 1 + Math.floor(Math.random() * 4);
-    for (let b = 0; b < blips; b += 1) {
+  for (let beat = 0; beat < beatsTotal; beat += 1) {
+    const t = t0 + beat * beatSec;
+    scheduleLampikBgmBeat(ctx, bus, t, beat % 4 === 0);
+
+    if (beat % 2 === 0) {
+      const chord = order[Math.floor(beat / 2) % order.length];
+      const padDur = beatSec * 2.05;
+      chord.forEach((semi) => {
+        scheduleLampikBgmPadNote(
+          ctx,
+          bus,
+          t,
+          mood.root + semi,
+          padDur,
+          0.038 + Math.random() * 0.022
+        );
+      });
+      const arpStep = beatSec * 0.48;
+      chord.forEach((semi, i) => {
+        scheduleLampikBgmMelodyBlip(ctx, bus, t + arpStep * i + 0.04, mood.root + semi + 12);
+      });
+    }
+
+    if (Math.random() > 0.35) {
       const semi = mood.scale[Math.floor(Math.random() * mood.scale.length)];
-      const octave = Math.random() > 0.55 ? 12 : 0;
       scheduleLampikBgmMelodyBlip(
         ctx,
         bus,
-        cursor + 0.35 + Math.random() * (chordDur - 0.5),
-        mood.root + semi + octave
+        t + beatSec * 0.55,
+        mood.root + semi + (Math.random() > 0.6 ? 12 : 0)
       );
     }
-    cursor += chordDur * (0.88 + Math.random() * 0.08);
   }
 
-  const restMs = (1.2 + Math.random() * 2.8) * 1000;
-  const phraseMs = Math.max(400, (cursor - t0) * 1000);
+  const restMs = (0.35 + Math.random() * 0.85) * 1000;
+  const phraseMs = beatsTotal * beatSec * 1000;
   lampikBgmState.phraseTimer = window.setTimeout(runLampikBgmPhrase, phraseMs + restMs);
 }
 
@@ -6212,16 +6431,21 @@ class MainScene extends Phaser.Scene {
     this.isMoving = true;
     this.refreshStopMarkersInteractivity();
     this.pauseIdleAnimation();
-    ensureMiniGameAudioContext();
+    onGameAudioUnlocked();
     this.prepareWalkVisuals(targetX, targetY);
 
     if (this.moveTween) {
       this.moveTween.kill();
     }
+    this.stopWalkFootsteps();
 
     gsap.killTweensOf([this.lampikRoot, this.lampik]);
 
+    const walkPlan = planWalkSteps(fromX, fromY, targetX, targetY, env);
+    this.startWalkFootsteps(walkPlan.cycleDuration);
+
     const finishMove = () => {
+      this.stopWalkFootsteps();
       this.stopWalkVisuals();
       this.currentStopIndex = nextIndex;
       this.lampikRoot.setPosition(targetX, targetY);
@@ -6238,6 +6462,14 @@ class MainScene extends Phaser.Scene {
     };
 
     this.moveTween = this.buildPathWalkTimeline(path, finishMove);
+  }
+
+  startWalkFootsteps(cycleDurationSec) {
+    startWalkFootstepRhythm(cycleDurationSec);
+  }
+
+  stopWalkFootsteps() {
+    stopWalkFootstepRhythm();
   }
 
   /**
@@ -6349,12 +6581,8 @@ class MainScene extends Phaser.Scene {
           },
           t0 + cycleDuration * liftPart
         );
-        tl.call(playLampikFootstepSound, [], t0 + cycleDuration * 0.12);
-      } else {
-        tl.call(playLampikFootstepSound, [], t0 + cycleDuration * 0.18);
       }
 
-      tl.call(playLampikFootstepSound, [], t0 + cycleDuration * liftPart);
     }
 
     return tl;
@@ -6572,6 +6800,7 @@ bindTaskModalUi();
 bindSparkExchangeUi();
 bindVideoSplashUi();
 bindGameAudioUnlock();
+bindPortraitOrientationGate();
 
 loadGameEnv()
   .then((env) => {
